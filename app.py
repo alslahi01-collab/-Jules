@@ -256,4 +256,6 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
                     matches_50_74.append(match_row)
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    # Disable debug and reloader to avoid signal issues on some platforms (like Streamlit or certain containers)
+    app.run(debug=False, use_reloader=False, host='0.0.0.0', port=port)
