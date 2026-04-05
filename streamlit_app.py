@@ -60,6 +60,9 @@ def process_comparison(file1, file2, col1, col2):
 
         if col1 not in df1.columns: continue
 
+        # ⚡ Bolt: Pre-calculate normalized values for df1 once per sheet s1
+        df1_norm = df1[col1].apply(normalize_arabic).astype(str).tolist()
+
         for s2 in sheets2:
             df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
             h2 = detect_header_row(df2_raw)
@@ -68,31 +71,42 @@ def process_comparison(file1, file2, col1, col2):
 
             if col2 not in df2.columns: continue
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
-                norm1 = normalize_arabic(val1)
-                if not norm1 or norm1 == 'nan': continue
+            # ⚡ Bolt: Pre-calculate normalized values for df2 once per sheet s2
+            df2_norm = df2[col2].apply(normalize_arabic).astype(str).tolist()
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
+            # Using enumerate() instead of iterrows() is significantly faster for large datasets
+            for idx1, norm1 in enumerate(df1_norm):
+                if not norm1 or norm1 == 'nan':
+                    continue
+
+                row1_dict = None  # Lazy conversion to dict only when a match is found
+
+                for idx2, norm2 in enumerate(df2_norm):
+                    if not norm2 or norm2 == 'nan':
+                        continue
 
                     if norm1 == norm2:
-                        match_row = row1.to_dict()
+                        if row1_dict is None:
+                            row1_dict = df1.iloc[idx1].to_dict()
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_100.append(match_row)
                         continue
 
+                    # Fuzzy matching is the most expensive operation; pre-normalization helps significantly
                     score = fuzz.ratio(norm1, norm2)
                     if score >= 75:
-                        match_row = row1.to_dict()
+                        if row1_dict is None:
+                            row1_dict = df1.iloc[idx1].to_dict()
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_75_99.append(match_row)
                     elif score >= 50:
-                        match_row = row1.to_dict()
+                        if row1_dict is None:
+                            row1_dict = df1.iloc[idx1].to_dict()
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_50_74.append(match_row)
