@@ -68,14 +68,15 @@ def process_comparison(file1, file2, col1, col2):
 
             if col2 not in df2.columns: continue
 
+            # Pre-calculate normalized values for the second dataframe to improve performance
+            df2_norms = [normalize_arabic(str(val)) for val in df2[col2]]
+
             for idx1, row1 in df1.iterrows():
                 val1 = str(row1[col1])
                 norm1 = normalize_arabic(val1)
                 if not norm1 or norm1 == 'nan': continue
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
+                for idx2, norm2 in enumerate(df2_norms):
                     if not norm2 or norm2 == 'nan': continue
 
                     if norm1 == norm2:
