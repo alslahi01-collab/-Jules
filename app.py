@@ -226,14 +226,16 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
+        # Pre-calculate normalized values for the second dataframe to avoid redundant calls in the nested loop
+        # This significantly improves performance by reducing O(N*M) calls to normalize_arabic to O(N + M)
+        df2_norms = [normalize_arabic(str(val)) for val in df2[col2]]
+
         for idx1, row1 in df1.iterrows():
             val1 = str(row1[col1])
             norm1 = normalize_arabic(val1)
             if not norm1 or norm1 == 'nan': continue
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
+            for idx2, norm2 in enumerate(df2_norms):
                 if not norm2 or norm2 == 'nan': continue
                 
                 if norm1 == norm2:
