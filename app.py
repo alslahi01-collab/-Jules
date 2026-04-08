@@ -226,31 +226,37 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
-            norm1 = normalize_arabic(val1)
+        # BOLT OPTIMIZATION: Pre-calculate normalized values and use faster iteration
+        # This avoids re-normalizing strings in the nested loop (O(N*M))
+        norm1_list = [normalize_arabic(str(v)) for v in df1[col1]]
+        norm2_list = [normalize_arabic(str(v)) for v in df2[col2]]
+
+        # Convert df1 to list of dicts once to avoid repeated to_dict() or row access overhead
+        df1_dicts = df1.to_dict('records')
+
+        for idx1, norm1 in enumerate(norm1_list):
             if not norm1 or norm1 == 'nan': continue
+            row1_dict = df1_dicts[idx1]
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
+            for idx2, norm2 in enumerate(norm2_list):
                 if not norm2 or norm2 == 'nan': continue
                 
                 if norm1 == norm2:
-                    match_row = row1.to_dict()
+                    match_row = row1_dict.copy()
                     match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                     match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                     matches_100.append(match_row)
                     continue
                 
+                # Fuzz ratio is relatively expensive, pre-calculated norms help
                 score = fuzz.ratio(norm1, norm2)
                 if score >= 75:
-                    match_row = row1.to_dict()
+                    match_row = row1_dict.copy()
                     match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                     match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                     matches_75_99.append(match_row)
                 elif score >= 50:
-                    match_row = row1.to_dict()
+                    match_row = row1_dict.copy()
                     match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                     match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                     matches_50_74.append(match_row)
