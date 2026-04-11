@@ -3,6 +3,7 @@ import pandas as pd
 import re
 from thefuzz import fuzz
 from io import BytesIO
+from functools import lru_cache
 
 def normalize_arabic(text):
     if not isinstance(text, str):
@@ -18,6 +19,13 @@ def normalize_arabic(text):
     # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+@lru_cache(maxsize=10000)
+def cached_fuzz_ratio(s1, s2):
+    """
+    Caches the results of the fuzzy ratio calculation to avoid redundant computations.
+    """
+    return fuzz.ratio(s1, s2)
 
 def detect_header_row(df_raw):
     max_non_null = 0
@@ -52,6 +60,36 @@ def process_comparison(file1, file2, col1, col2):
     sheets1 = xls1.sheet_names
     sheets2 = xls2.sheet_names
 
+    # Optimization: Pre-read and pre-process all sheets from file2 into memory
+    file2_processed_sheets = []
+    for s2 in sheets2:
+        df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
+        h2 = detect_header_row(df2_raw)
+        df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
+        df2.columns = df2.columns.astype(str).str.strip()
+
+        if col2 not in df2.columns: continue
+
+        df2_data = []
+        for idx2, row2 in df2.iterrows():
+            norm2 = normalize_arabic(str(row2[col2]))
+            if norm2 and norm2 != 'nan':
+                df2_data.append((idx2, norm2))
+
+        # Exact match map for this sheet
+        df2_norm_map = {}
+        for idx2, norm2 in df2_data:
+            if norm2 not in df2_norm_map:
+                df2_norm_map[norm2] = []
+            df2_norm_map[norm2].append(idx2)
+
+        file2_processed_sheets.append({
+            'name': s2,
+            'header_idx': h2,
+            'data': df2_data,
+            'norm_map': df2_norm_map
+        })
+
     for s1 in sheets1:
         df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
         h1 = detect_header_row(df1_raw)
@@ -60,39 +98,40 @@ def process_comparison(file1, file2, col1, col2):
 
         if col1 not in df1.columns: continue
 
-        for s2 in sheets2:
-            df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
-            h2 = detect_header_row(df2_raw)
-            df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
-            df2.columns = df2.columns.astype(str).str.strip()
+        # Pre-process current sheet from file1
+        df1_data = []
+        for idx1, row1 in df1.iterrows():
+            norm1 = normalize_arabic(str(row1[col1]))
+            if norm1 and norm1 != 'nan':
+                df1_data.append((idx1, row1.to_dict(), norm1))
 
-            if col2 not in df2.columns: continue
+        for sheet2_info in file2_processed_sheets:
+            s2 = sheet2_info['name']
+            h2 = sheet2_info['header_idx']
+            df2_data = sheet2_info['data']
+            df2_norm_map = sheet2_info['norm_map']
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
-                norm1 = normalize_arabic(val1)
-                if not norm1 or norm1 == 'nan': continue
-
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
-
-                    if norm1 == norm2:
-                        match_row = row1.to_dict()
+            for idx1, row1_dict, norm1 in df1_data:
+                # Exact matches
+                if norm1 in df2_norm_map:
+                    for idx2 in df2_norm_map[norm1]:
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_100.append(match_row)
-                        continue
 
-                    score = fuzz.ratio(norm1, norm2)
+                # Fuzzy matches
+                for idx2, norm2 in df2_data:
+                    if norm1 == norm2: continue
+
+                    score = cached_fuzz_ratio(norm1, norm2)
                     if score >= 75:
-                        match_row = row1.to_dict()
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_75_99.append(match_row)
                     elif score >= 50:
-                        match_row = row1.to_dict()
+                        match_row = row1_dict.copy()
                         match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_50_74.append(match_row)
