@@ -1,9 +1,12 @@
 import streamlit as st
 import pandas as pd
 import re
+import functools
+from collections import defaultdict
 from thefuzz import fuzz
 from io import BytesIO
 
+@functools.lru_cache(maxsize=1024)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -52,50 +55,79 @@ def process_comparison(file1, file2, col1, col2):
     sheets1 = xls1.sheet_names
     sheets2 = xls2.sheet_names
 
+    # Optimization: Pre-read and pre-process all sheets from file2 to avoid redundant I/O
+    dfs2_info = []
+    for s2 in sheets2:
+        df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None, nrows=10)
+        h2 = detect_header_row(df2_raw)
+        df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
+        df2.columns = df2.columns.astype(str).str.strip()
+
+        if col2 in df2.columns:
+            # Pre-calculate normalized values and group by them
+            norm2_series = df2[col2].astype(str).apply(normalize_arabic)
+            df2_map = defaultdict(list)
+            for idx, norm in norm2_series.items():
+                if norm and norm != 'nan':
+                    df2_map[norm].append(idx)
+            dfs2_info.append({
+                'name': s2,
+                'df': df2,
+                'header_idx': h2,
+                'map': df2_map,
+                'unique_norms': list(df2_map.keys())
+            })
+
     for s1 in sheets1:
-        df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
+        df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None, nrows=10)
         h1 = detect_header_row(df1_raw)
         df1 = pd.read_excel(xls1, sheet_name=s1, header=h1)
         df1.columns = df1.columns.astype(str).str.strip()
 
         if col1 not in df1.columns: continue
 
-        for s2 in sheets2:
-            df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
-            h2 = detect_header_row(df2_raw)
-            df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
-            df2.columns = df2.columns.astype(str).str.strip()
+        # Optimization: Pre-calculate normalized values and group by them for current sheet
+        norm1_series = df1[col1].astype(str).apply(normalize_arabic)
+        df1_map = defaultdict(list)
+        for idx, norm in norm1_series.items():
+            if norm and norm != 'nan':
+                df1_map[norm].append(idx)
 
-            if col2 not in df2.columns: continue
+        unique_norms1 = list(df1_map.keys())
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
-                norm1 = normalize_arabic(val1)
-                if not norm1 or norm1 == 'nan': continue
+        for info2 in dfs2_info:
+            s2 = info2['name']
+            df2 = info2['df']
+            h2 = info2['header_idx']
+            df2_map = info2['map']
+            unique_norms2 = info2['unique_norms']
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
+            for n1 in unique_norms1:
+                # 1. Exact matches (100%) - O(1) lookup
+                if n1 in df2_map:
+                    for idx1 in df1_map[n1]:
+                        row1_dict = df1.iloc[idx1].to_dict()
+                        for idx2 in df2_map[n1]:
+                            match_row = row1_dict.copy()
+                            match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_100.append(match_row)
 
-                    if norm1 == norm2:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_100.append(match_row)
+                # 2. Fuzzy matches - only compare unique pairs
+                for n2 in unique_norms2:
+                    if n1 == n2:
                         continue
 
-                    score = fuzz.ratio(norm1, norm2)
-                    if score >= 75:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_75_99.append(match_row)
-                    elif score >= 50:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_50_74.append(match_row)
+                    score = fuzz.ratio(n1, n2)
+                    if score >= 50:
+                        target_list = matches_75_99 if score >= 75 else matches_50_74
+                        for idx1 in df1_map[n1]:
+                            row1_dict = df1.iloc[idx1].to_dict()
+                            for idx2 in df2_map[n2]:
+                                match_row = row1_dict.copy()
+                                match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                                match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                                target_list.append(match_row)
 
     return {
         'matches_100': pd.DataFrame(matches_100),
