@@ -6,6 +6,7 @@ import uuid
 import re
 from thefuzz import fuzz
 from io import BytesIO
+from functools import lru_cache
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -214,6 +216,10 @@ def process_comparison(path1, path2, col1, col2):
         'matches_50_74': pd.DataFrame(matches_50_74)
     }
 
+@lru_cache(maxsize=10000)
+def cached_fuzz_ratio(s1, s2):
+    return fuzz.ratio(s1, s2)
+
 def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, matches_50_74):
     df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
     h1 = detect_header_row(df1_raw)
@@ -226,34 +232,50 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
-            norm1 = normalize_arabic(val1)
-            if not norm1 or norm1 == 'nan': continue
-            
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
+        # Optimization: Use dictionaries and unique value sets to avoid O(N*M) redundant work.
+        # 1. Pre-calculate normalized values and pre-convert to dicts for fast access
+        rows1_dict = df1.to_dict('index')
+        df1_norm = df1[col1].astype(str).map(normalize_arabic)
+        norm_map1 = {}
+        for idx1, norm1 in df1_norm.items():
+            if norm1 and norm1 != 'nan':
+                norm_map1.setdefault(norm1, []).append(idx1)
+
+        rows2_dict = df2.to_dict('index')
+        df2_norm = df2[col2].astype(str).map(normalize_arabic)
+        norm_map2 = {}
+        for idx2, norm2 in df2_norm.items():
+            if norm2 and norm2 != 'nan':
+                norm_map2.setdefault(norm2, []).append(idx2)
+
+        # 2. Perform comparison using grouped unique values
+        for norm1, indices1 in norm_map1.items():
+            # Exact matches (O(1) lookup)
+            if norm1 in norm_map2:
+                for idx1 in indices1:
+                    r1 = rows1_dict[idx1]
+                    for idx2 in norm_map2[norm1]:
+                        match_row = r1.copy()
+                        match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                        matches_100.append(match_row)
+
+            # Fuzzy matches (Only compare each unique pair once)
+            for norm2, indices2 in norm_map2.items():
+                if norm1 == norm2: continue
                 
-                if norm1 == norm2:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_100.append(match_row)
-                    continue
-                
-                score = fuzz.ratio(norm1, norm2)
-                if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
-                elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+                score = cached_fuzz_ratio(norm1, norm2)
+                if score >= 50:
+                    for idx1 in indices1:
+                        r1 = rows1_dict[idx1]
+                        for idx2 in indices2:
+                            match_row = r1.copy()
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            if score >= 75:
+                                matches_75_99.append(match_row)
+                            else:
+                                matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
