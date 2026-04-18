@@ -6,6 +6,7 @@ import uuid
 import re
 from thefuzz import fuzz
 from io import BytesIO
+from functools import lru_cache
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -134,6 +136,10 @@ def normalize_arabic(text):
     text = re.sub(r'\s+', ' ', text).strip()
     
     return text
+
+@lru_cache(maxsize=10000)
+def cached_fuzz_ratio(s1, s2):
+    return fuzz.ratio(s1, s2)
 
 def extract_metadata(filepath):
     xls = pd.ExcelFile(filepath)
@@ -226,34 +232,49 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
+        # Pre-calculate normalized values for df2 and group indices
+        # This allows O(1) exact matching and reduces fuzzy calls
+        norm_map2 = {}
+        for idx2, val2 in enumerate(df2[col2]):
+            norm2 = normalize_arabic(str(val2))
+            if not norm2 or norm2 == 'nan': continue
+            if norm2 not in norm_map2:
+                norm_map2[norm2] = []
+            norm_map2[norm2].append(idx2)
+
+        unique_norms2 = list(norm_map2.keys())
+        df1_records = df1.to_dict('records')
+
+        for idx1, row1 in enumerate(df1_records):
             val1 = str(row1[col1])
             norm1 = normalize_arabic(val1)
             if not norm1 or norm1 == 'nan': continue
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
-                
-                if norm1 == norm2:
-                    match_row = row1.to_dict()
+            # 1. Exact matches (O(1) lookup)
+            if norm1 in norm_map2:
+                for idx2 in norm_map2[norm1]:
+                    match_row = row1.copy()
                     match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                     match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                     matches_100.append(match_row)
+                # Note: We continue checking fuzzy matches because a single norm1
+                # might match other non-identical strings in df2 above thresholds.
+
+            # 2. Fuzzy matches (Iterate over UNIQUE values in sheet 2)
+            for norm2 in unique_norms2:
+                if norm1 == norm2:
                     continue
                 
-                score = fuzz.ratio(norm1, norm2)
-                if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
-                elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+                score = cached_fuzz_ratio(norm1, norm2)
+                if score >= 50:
+                    for idx2 in norm_map2[norm2]:
+                        match_row = row1.copy()
+                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2} (Row {idx2+h2+2})"
+                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                        if score >= 75:
+                            matches_75_99.append(match_row)
+                        else:
+                            matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
