@@ -2,4 +2,10 @@ uploads/
 __pycache__/
 *.log
 verify_app.py
+verify_performance.py
+benchmark.py
+test1.xlsx
+test2.xlsx
+bench1.xlsx
+bench2.xlsx
 /home/jules/verification/
