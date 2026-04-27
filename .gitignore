@@ -1,5 +1,5 @@
 uploads/
 __pycache__/
-*.log
-verify_app.py
-/home/jules/verification/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
