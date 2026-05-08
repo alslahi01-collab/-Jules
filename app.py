@@ -4,6 +4,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import uuid
 import re
+import functools
 from thefuzz import fuzz
 from io import BytesIO
 
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -165,6 +167,15 @@ def extract_metadata(filepath):
 def process_comparison(path1, path2, col1, col2):
     xls1 = pd.ExcelFile(path1)
     xls2 = pd.ExcelFile(path2)
+
+    # Optimization: Pre-load and cache all sheets from xls2
+    xls2_sheets = {}
+    for s2 in xls2.sheet_names:
+        df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
+        h2 = detect_header_row(df2_raw)
+        df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
+        df2.columns = df2.columns.astype(str).str.strip()
+        xls2_sheets[s2] = {'df': df2, 'h': h2}
     
     matches_100 = []
     matches_75_99 = []
@@ -174,7 +185,13 @@ def process_comparison(path1, path2, col1, col2):
     sheets2 = xls2.sheet_names
     
     if len(sheets1) == 1 and len(sheets2) == 1:
-        process_sheets(xls1, sheets1[0], xls2, sheets2[0], col1, col2, matches_100, matches_75_99, matches_50_74)
+        s1, s2 = sheets1[0], sheets2[0]
+        df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
+        h1 = detect_header_row(df1_raw)
+        df1 = pd.read_excel(xls1, sheet_name=s1, header=h1)
+        df1.columns = df1.columns.astype(str).str.strip()
+
+        process_sheets_optimized(df1, h1, s1, xls2_sheets[s2]['df'], xls2_sheets[s2]['h'], s2, col1, col2, matches_100, matches_75_99, matches_50_74)
     else:
         for s1 in sheets1:
             best_s2 = None
@@ -189,24 +206,21 @@ def process_comparison(path1, path2, col1, col2):
                     best_score = score
                     best_s2 = s2
             
+            df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
+            h1 = detect_header_row(df1_raw)
+            df1 = pd.read_excel(xls1, sheet_name=s1, header=h1)
+            df1.columns = df1.columns.astype(str).str.strip()
+            df1_cols = set(df1.columns)
+
             if not best_s2 or best_score < 100:
-                df1_raw_tmp = pd.read_excel(xls1, sheet_name=s1, header=None, nrows=10)
-                h1_tmp = detect_header_row(df1_raw_tmp)
-                df1_tmp = pd.read_excel(xls1, sheet_name=s1, header=h1_tmp, nrows=1)
-                df1_cols = set(df1_tmp.columns.astype(str).str.strip())
-                
-                for s2 in sheets2:
-                    df2_raw_tmp = pd.read_excel(xls2, sheet_name=s2, header=None, nrows=10)
-                    h2_tmp = detect_header_row(df2_raw_tmp)
-                    df2_tmp = pd.read_excel(xls2, sheet_name=s2, header=h2_tmp, nrows=1)
-                    df2_cols = set(df2_tmp.columns.astype(str).str.strip())
-                    
+                for s2, data2 in xls2_sheets.items():
+                    df2_cols = set(data2['df'].columns)
                     if col1 in df1_cols and col2 in df2_cols:
                         best_s2 = s2
                         break
             
             if best_s2:
-                process_sheets(xls1, s1, xls2, best_s2, col1, col2, matches_100, matches_75_99, matches_50_74)
+                process_sheets_optimized(df1, h1, s1, xls2_sheets[best_s2]['df'], xls2_sheets[best_s2]['h'], best_s2, col1, col2, matches_100, matches_75_99, matches_50_74)
 
     return {
         'matches_100': pd.DataFrame(matches_100),
@@ -214,46 +228,79 @@ def process_comparison(path1, path2, col1, col2):
         'matches_50_74': pd.DataFrame(matches_50_74)
     }
 
-def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, matches_50_74):
-    df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
-    h1 = detect_header_row(df1_raw)
-    df1 = pd.read_excel(xls1, sheet_name=s1, header=h1)
-    df1.columns = df1.columns.astype(str).str.strip()
-    
-    df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
-    h2 = detect_header_row(df2_raw)
-    df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
-    df2.columns = df2.columns.astype(str).str.strip()
-    
+def process_sheets_optimized(df1, h1, s1, df2, h2, s2, col1, col2, matches_100, matches_75_99, matches_50_74):
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
-            norm1 = normalize_arabic(val1)
-            if not norm1 or norm1 == 'nan': continue
+        # Optimization: Use dictionary-based approach for unique values
+        # Pre-process df1 unique values and their row indices
+        norm_map1 = {}
+        for idx1, val in df1[col1].items():
+            norm = normalize_arabic(str(val))
+            if not norm or norm == 'nan': continue
+            if norm not in norm_map1: norm_map1[norm] = []
+            norm_map1[norm].append(idx1)
+
+        # Pre-process df2 unique values and their row indices
+        norm_map2 = {}
+        for idx2, val in df2[col2].items():
+            norm = normalize_arabic(str(val))
+            if not norm or norm == 'nan': continue
+            if norm not in norm_map2: norm_map2[norm] = []
+            norm_map2[norm].append(idx2)
+
+        # Cache for fuzzy matching results to avoid redundant calculations between unique value pairs
+        fuzz_results_cache = {}
+
+        unique_norms1 = list(norm_map1.keys())
+        unique_norms2 = list(norm_map2.keys())
+
+        # Performance: Convert df1 to dict once for faster row access
+        df1_dict = df1.to_dict('index')
+
+        # Performance: Grouping by unique values reduces complexity from O(N*M) to O(U1*U2)
+        for norm1 in unique_norms1:
+            indices1 = norm_map1[norm1]
+
+            # 1. Exact matches (O(1) lookup in dict)
+            if norm1 in norm_map2:
+                indices2 = norm_map2[norm1]
+                for idx1 in indices1:
+                    row1_data = df1_dict[idx1]
+                    for idx2 in indices2:
+                        match_row = row1_data.copy()
+                        match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                        matches_100.append(match_row)
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
+            # 2. Fuzzy matches
+            for norm2 in unique_norms2:
+                if norm1 == norm2: continue # already handled by exact match
                 
-                if norm1 == norm2:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_100.append(match_row)
-                    continue
+                # Check cache (symmetric key sorting)
+                pair = tuple(sorted((norm1, norm2)))
+                if pair in fuzz_results_cache:
+                    score = fuzz_results_cache[pair]
+                else:
+                    score = fuzz.ratio(norm1, norm2)
+                    fuzz_results_cache[pair] = score
                 
-                score = fuzz.ratio(norm1, norm2)
                 if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
+                    indices2 = norm_map2[norm2]
+                    for idx1 in indices1:
+                        row1_data = df1_dict[idx1]
+                        for idx2 in indices2:
+                            match_row = row1_data.copy()
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_75_99.append(match_row)
                 elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+                    indices2 = norm_map2[norm2]
+                    for idx1 in indices1:
+                        row1_data = df1_dict[idx1]
+                        for idx2 in indices2:
+                            match_row = row1_data.copy()
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
