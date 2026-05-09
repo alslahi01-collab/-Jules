@@ -1,0 +1,3 @@
+## 2025-05-15 - [O(N*M) to O(U1*U2) Fuzzy Matching Optimization]
+**Learning:** In high-frequency fuzzy matching loops, using `df.iterrows()` and accessing row values via Series is a massive performance bottleneck. Pre-converting DataFrames to dictionaries with `df.to_dict('index')` and grouping row indices by unique normalized values allows reducing the comparison complexity from (N \times M)$ to (U_1 \times U_2)$.
+**Action:** Always pre-convert DataFrames to dictionaries and use unique-value grouping for O(N^2) comparison tasks. Use symmetric caching for similarity scores (e.g., sorted tuple as key) to further halve computation time.
