@@ -1,4 +1,5 @@
 import os
+import functools
 import pandas as pd
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -225,35 +227,61 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
     df2.columns = df2.columns.astype(str).str.strip()
     
-    if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
-            norm1 = normalize_arabic(val1)
-            if not norm1 or norm1 == 'nan': continue
+    if col1 not in df1.columns or col2 not in df2.columns:
+        return
+
+    # Optimization: Pre-process and group rows by unique normalized values
+    # Pre-converting to dict avoids the overhead of row access inside loops
+    data1 = df1.to_dict('records')
+    data2 = df2.to_dict('records')
+
+    norm_map1 = {}
+    for idx, row in enumerate(data1):
+        norm = normalize_arabic(str(row.get(col1, '')))
+        if not norm or norm == 'nan': continue
+        if norm not in norm_map1: norm_map1[norm] = []
+        norm_map1[norm].append((idx, row))
+
+    norm_map2 = {}
+    for idx, row in enumerate(data2):
+        norm = normalize_arabic(str(row.get(col2, '')))
+        if not norm or norm == 'nan': continue
+        if norm not in norm_map2: norm_map2[norm] = []
+        norm_map2[norm].append((idx, row))
+
+    norms1 = list(norm_map1.keys())
+    norms2 = list(norm_map2.keys())
+
+    # Cache results for unique pairs to avoid redundant fuzz.ratio calls
+    fuzz_results_cache = {}
+
+    for n1 in norms1:
+        for n2 in norms2:
+            score = 100 if n1 == n2 else None
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
+            if score is None:
+                # Use symmetric caching for similarity
+                pair = tuple(sorted((n1, n2)))
+                if pair not in fuzz_results_cache:
+                    fuzz_results_cache[pair] = fuzz.ratio(n1, n2)
+                score = fuzz_results_cache[pair]
                 
-                if norm1 == norm2:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_100.append(match_row)
-                    continue
-                
-                score = fuzz.ratio(norm1, norm2)
-                if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
-                elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+            if score >= 50:
+                for idx1, row1 in norm_map1[n1]:
+                    for idx2, row2 in norm_map2[n2]:
+                        match_row = row1.copy()
+                        if score == 100:
+                            match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_100.append(match_row)
+                        elif score >= 75:
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_75_99.append(match_row)
+                        else:
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
