@@ -3,7 +3,9 @@ import pandas as pd
 import re
 from thefuzz import fuzz
 from io import BytesIO
+from functools import lru_cache
 
+@lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -42,6 +44,10 @@ def extract_metadata(uploaded_file):
     return sorted(list(all_columns))
 
 def process_comparison(file1, file2, col1, col2):
+    """
+    Optimized comparison logic for Streamlit.
+    Pre-loads target file sheets and uses unique-value grouping to minimize redundant computations.
+    """
     xls1 = pd.ExcelFile(file1)
     xls2 = pd.ExcelFile(file2)
 
@@ -52,6 +58,33 @@ def process_comparison(file1, file2, col1, col2):
     sheets1 = xls1.sheet_names
     sheets2 = xls2.sheet_names
 
+    # Pre-read and pre-process all sheets of the target file to avoid redundant I/O inside loops
+    processed_sheets2 = []
+    for s2 in sheets2:
+        df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
+        h2 = detect_header_row(df2_raw)
+        df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
+        df2.columns = df2.columns.astype(str).str.strip()
+
+        if col2 in df2.columns:
+            # Group row indices by unique normalized values
+            norm2_map = {}
+            for idx, val in enumerate(df2[col2]):
+                norm = normalize_arabic(str(val))
+                if not norm or norm == 'nan': continue
+                if norm not in norm2_map:
+                    norm2_map[norm] = []
+                norm2_map[norm].append(idx)
+
+            processed_sheets2.append({
+                'name': s2,
+                'header_idx': h2,
+                'norm_map': norm2_map
+            })
+
+    # Cache for fuzzy results between unique pairs across different sheets
+    fuzz_results_cache = {}
+
     for s1 in sheets1:
         df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
         h1 = detect_header_row(df1_raw)
@@ -60,42 +93,54 @@ def process_comparison(file1, file2, col1, col2):
 
         if col1 not in df1.columns: continue
 
-        for s2 in sheets2:
-            df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
-            h2 = detect_header_row(df2_raw)
-            df2 = pd.read_excel(xls2, sheet_name=s2, header=h2)
-            df2.columns = df2.columns.astype(str).str.strip()
+        # Pre-convert df1 to dict for O(1) row access
+        df1_dicts = df1.to_dict('index')
 
-            if col2 not in df2.columns: continue
+        # Group df1 indices
+        norm1_map = {}
+        for idx, val in enumerate(df1[col1]):
+            norm = normalize_arabic(str(val))
+            if not norm or norm == 'nan': continue
+            if norm not in norm1_map:
+                norm1_map[norm] = []
+            norm1_map[norm].append(idx)
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
-                norm1 = normalize_arabic(val1)
-                if not norm1 or norm1 == 'nan': continue
+        for s2_data in processed_sheets2:
+            s2 = s2_data['name']
+            h2 = s2_data['header_idx']
+            norm2_map = s2_data['norm_map']
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
-
+            for norm1, indices1 in norm1_map.items():
+                for norm2, indices2 in norm2_map.items():
                     if norm1 == norm2:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_100.append(match_row)
+                        for idx1 in indices1:
+                            row_data = df1_dicts[idx1]
+                            for idx2 in indices2:
+                                match_row = row_data.copy()
+                                match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                                match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                                matches_100.append(match_row)
                         continue
 
-                    score = fuzz.ratio(norm1, norm2)
-                    if score >= 75:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_75_99.append(match_row)
-                    elif score >= 50:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_50_74.append(match_row)
+                    pair = tuple(sorted((norm1, norm2)))
+                    if pair in fuzz_results_cache:
+                        score = fuzz_results_cache[pair]
+                    else:
+                        score = fuzz.ratio(norm1, norm2)
+                        fuzz_results_cache[pair] = score
+
+                    if score >= 50:
+                        for idx1 in indices1:
+                            row_data = df1_dicts[idx1]
+                            for idx2 in indices2:
+                                match_row = row_data.copy()
+                                match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                                if score >= 75:
+                                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                                    matches_75_99.append(match_row)
+                                else:
+                                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                                    matches_50_74.append(match_row)
 
     return {
         'matches_100': pd.DataFrame(matches_100),
