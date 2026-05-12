@@ -1,0 +1,3 @@
+## 2025-05-14 - [High-frequency fuzzy matching in nested loops]
+**Learning:** The application performs O(N*M) fuzzy string comparisons using `fuzz.ratio` inside nested loops. For a 300x300 comparison, this is 90,000 calls to an expensive string similarity function. Many rows share the same values, leading to redundant calculations. Additionally, `df.iterrows()` and `row.to_dict()` inside the inner loop add significant overhead.
+**Action:** 1. Use `lru_cache` for string normalization. 2. Group row indices by unique normalized values to perform fuzzy matching only once per unique pair. 3. Cache fuzzy similarity results. 4. Pre-convert DataFrames to dictionaries to avoid `iterrows()` overhead.
