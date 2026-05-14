@@ -1,0 +1,3 @@
+## 2026-05-14 - [Fuzzy matching optimization in Excel comparison]
+**Learning:** In high-frequency fuzzy matching loops, using `df.iterrows()` or `row.to_dict()` inside the inner loop is a massive performance killer. Pre-converting the DataFrame to a dictionary using `df.to_dict('index')` outside the loop reduces row access overhead significantly. Additionally, grouping row indices by unique normalized values allows performing fuzzy matching once per unique value pair instead of once per row pair, which is critical when datasets have many duplicates or near-duplicates.
+**Action:** Always pre-process DataFrames into dictionaries or numpy arrays for inner loop access. Group data by unique comparison keys to minimize expensive fuzzy matching operations.
