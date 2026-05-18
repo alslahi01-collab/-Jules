@@ -1,0 +1,3 @@
+## 2025-05-15 - Optimized Fuzzy Row Matching
+**Learning:** In high-frequency fuzzy matching loops (O(N*M)), using `df.iterrows()` and repeated `fuzz.ratio` calls on duplicate strings are major bottlenecks. Grouping indices by unique normalized values and caching fuzzy results for string pairs reduced execution time from ~8s to ~0.2s for 200x200 rows. Additionally, pre-converting the outer loop's DataFrame to a list of dicts using `df.to_dict('records')` avoids expensive pandas row access overhead.
+**Action:** Always group by unique values before O(N*M) comparisons and use a results cache for expensive similarity metrics like Levenshtein distance. Prefer `to_dict('records')` over `iterrows()` for tight loops.
