@@ -1,0 +1,4 @@
+## 2025-05-14 - [Fuzzy matching bottleneck with duplicates]
+**Learning:** In high-frequency fuzzy matching loops (e.g., comparing rows between two Excel sheets), using `df.iterrows()` or `df.iloc` is a massive performance killer. Pre-converting DataFrames to a list of records (`to_dict('records')`) outside the loop reduces row access overhead to nearly zero. Furthermore, grouping row indices by unique normalized values into a dictionary allows handling duplicate data correctly while reducing expensive `fuzz.ratio` (O(N^2) complexity) to O(U1*U2) unique pair computations.
+
+**Action:** For symmetric similarity functions like `fuzz.ratio`, use a sorted tuple of normalized strings as the cache key to halve the number of required expensive computations, and always group by unique values when comparing large sets of data with potential duplicates.
