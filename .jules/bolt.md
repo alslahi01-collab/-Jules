@@ -1,0 +1,3 @@
+## 2026-05-20 - Massive O(N²) Fuzzy Matching Bottleneck
+**Learning:** The core Excel comparison logic used `df.iterrows()` inside nested loops for fuzzy matching. This created an O(N*M) bottleneck that scaled poorly, taking ~19s for just 300x300 rows. Converting to dictionaries and grouping by unique normalized values allows performing fuzzy matching only once per unique value pair, reducing complexity to O(U1*U2) where U is unique values.
+**Action:** Always favor dictionary-based lookups and pre-converted record lists over `iterrows()` in high-frequency loops. Cache symmetric operations like `fuzz.ratio` using sorted tuples of normalized strings.
