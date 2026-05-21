@@ -1,0 +1,3 @@
+## 2026-05-21 - [Extreme Speedup via Row Grouping and Record Pre-conversion]
+**Learning:** In high-frequency fuzzy matching loops, using `df.iterrows()` or `row.to_dict()` inside the inner match condition is a massive performance killer. Pre-converting the DataFrame to a list of dictionaries using `df.to_dict('records')` and grouping row indices by unique normalized values allows performing expensive `fuzz.ratio` calls only once per unique string pair, reducing complexity from O(N*M) to O(U1*U2).
+**Action:** Always pre-convert DataFrames to records and use a hash map (dictionary) to group indices by comparison values when performing O(N²) or O(N*M) row comparisons.
