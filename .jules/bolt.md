@@ -1,0 +1,3 @@
+## 2026-05-27 - [Optimized Fuzzy Matching in Excel Comparisons]
+**Learning:** In high-frequency fuzzy matching loops (O(N*M)), using `df.iterrows()` and repeated `fuzz.ratio` or string normalization on identical values are massive performance killers. Converting DataFrames to a list of dictionaries (`to_dict('records')`) and grouping row indices by unique normalized values allows performing fuzzy matching once per unique value pair instead of once per row pair.
+**Action:** Always pre-convert DataFrames to records and use a dictionary-based grouping (unique value mapping) to reduce quadratic complexity and minimize expensive string operations and fuzzy matching calls.
