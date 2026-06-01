@@ -1,9 +1,11 @@
 import streamlit as st
+import functools
 import pandas as pd
 import re
 from thefuzz import fuzz
 from io import BytesIO
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -59,6 +61,7 @@ def process_comparison(file1, file2, col1, col2):
         df1.columns = df1.columns.astype(str).str.strip()
 
         if col1 not in df1.columns: continue
+        records1 = df1.to_dict('records')
 
         for s2 in sheets2:
             df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
@@ -67,35 +70,54 @@ def process_comparison(file1, file2, col1, col2):
             df2.columns = df2.columns.astype(str).str.strip()
 
             if col2 not in df2.columns: continue
+            records2 = df2.to_dict('records')
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
+            # Pre-calculate normalized values for df2 and group by value
+            norm_map2 = {}
+            for idx2, row2 in enumerate(records2):
+                v2 = str(row2.get(col2, ''))
+                n2 = normalize_arabic(v2)
+                if not n2 or n2 == 'nan': continue
+                if n2 not in norm_map2:
+                    norm_map2[n2] = []
+                norm_map2[n2].append(idx2)
+
+            unique_norms2 = list(norm_map2.keys())
+            fuzz_results_cache = {}
+
+            for idx1, row1 in enumerate(records1):
+                val1 = str(row1.get(col1, ''))
                 norm1 = normalize_arabic(val1)
                 if not norm1 or norm1 == 'nan': continue
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
-
-                    if norm1 == norm2:
-                        match_row = row1.to_dict()
+                # 1. Check for exact matches
+                if norm1 in norm_map2:
+                    for idx2 in norm_map2[norm1]:
+                        match_row = row1.copy()
                         match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_100.append(match_row)
-                        continue
 
-                    score = fuzz.ratio(norm1, norm2)
-                    if score >= 75:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_75_99.append(match_row)
-                    elif score >= 50:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_50_74.append(match_row)
+                # 2. Check for fuzzy matches
+                for n2 in unique_norms2:
+                    if norm1 == n2: continue
+
+                    pair = tuple(sorted((norm1, n2)))
+                    if pair in fuzz_results_cache:
+                        score = fuzz_results_cache[pair]
+                    else:
+                        score = fuzz.ratio(norm1, n2)
+                        fuzz_results_cache[pair] = score
+
+                    if score >= 50:
+                        for idx2 in norm_map2[n2]:
+                            match_row = row1.copy()
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            if score >= 75:
+                                matches_75_99.append(match_row)
+                            else:
+                                matches_50_74.append(match_row)
 
     return {
         'matches_100': pd.DataFrame(matches_100),
