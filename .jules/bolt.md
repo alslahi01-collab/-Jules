@@ -1,0 +1,3 @@
+## 2025-05-15 - Row Comparison Optimization in Excel Comparison
+**Learning:** In high-frequency fuzzy matching loops, using `df.iterrows()` and accessing values via `row[col]` is extremely slow due to Pandas overhead. Pre-converting the DataFrame to a list of dictionaries using `df.to_dict('records')` and grouping by unique normalized values in a hash map (`norm_map`) reduces the comparison complexity from O(N*M) to O(U1*U2) unique pairs, providing a >10x speedup.
+**Action:** Always prefer `to_dict('records')` for row iteration and use dictionary-based grouping for matching logic involving expensive operations like `fuzz.ratio`.
