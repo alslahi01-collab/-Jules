@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimized Row Comparisons in Excel Matching]
+**Learning:** In string-matching tasks using Pandas, the combination of `df.iterrows()` and repeated `fuzz.ratio` calls on identical row values is a massive performance killer. Pre-converting the DataFrame to a list of dictionaries using `df.to_dict('records')` and grouping row indices by their normalized values allows reducing the complexity from O(N*M) to O(U1*U2) where U is the number of unique values.
+**Action:** Always prefer record-based iteration over `iterrows()` for high-frequency loops and implement a results cache for expensive similarity metrics (like fuzzy matching) between unique string pairs.
