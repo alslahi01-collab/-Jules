@@ -1,4 +1,5 @@
 import os
+import functools
 import pandas as pd
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -226,34 +228,54 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
-            norm1 = normalize_arabic(val1)
-            if not norm1 or norm1 == 'nan': continue
-            
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
+        # Group indices by normalized values to avoid O(N*M) redundant checks
+        norm_map1 = {}
+        for idx, val in df1[col1].items():
+            norm = normalize_arabic(str(val))
+            if norm and norm != 'nan':
+                norm_map1.setdefault(norm, []).append(idx)
+
+        norm_map2 = {}
+        for idx, val in df2[col2].items():
+            norm = normalize_arabic(str(val))
+            if norm and norm != 'nan':
+                norm_map2.setdefault(norm, []).append(idx)
+
+        # Pre-convert to records for O(1) row access
+        records1 = df1.to_dict('records')
+
+        unique_norms1 = list(norm_map1.keys())
+        unique_norms2 = list(norm_map2.keys())
+
+        # O(U1 * U2) complexity where U is number of unique normalized values
+        for norm1 in unique_norms1:
+            indices1 = norm_map1[norm1]
+            for norm2 in unique_norms2:
+                indices2 = norm_map2[norm2]
                 
                 if norm1 == norm2:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_100.append(match_row)
+                    for idx1 in indices1:
+                        row_dict = records1[idx1]
+                        for idx2 in indices2:
+                            match_row = row_dict.copy()
+                            match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            matches_100.append(match_row)
                     continue
                 
+                # Fuzzy matching - performed once per unique value pair
                 score = fuzz.ratio(norm1, norm2)
-                if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
-                elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+                if score >= 50:
+                    for idx1 in indices1:
+                        row_dict = records1[idx1]
+                        for idx2 in indices2:
+                            match_row = row_dict.copy()
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            if score >= 75:
+                                matches_75_99.append(match_row)
+                            else:
+                                matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
