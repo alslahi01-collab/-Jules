@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
 import re
+import functools
 from thefuzz import fuzz
 from io import BytesIO
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -59,6 +61,7 @@ def process_comparison(file1, file2, col1, col2):
         df1.columns = df1.columns.astype(str).str.strip()
 
         if col1 not in df1.columns: continue
+        records1 = df1.to_dict('records')
 
         for s2 in sheets2:
             df2_raw = pd.read_excel(xls2, sheet_name=s2, header=None)
@@ -67,35 +70,50 @@ def process_comparison(file1, file2, col1, col2):
             df2.columns = df2.columns.astype(str).str.strip()
 
             if col2 not in df2.columns: continue
+            records2 = df2.to_dict('records')
 
-            for idx1, row1 in df1.iterrows():
-                val1 = str(row1[col1])
+            # Optimization: Pre-normalize and group by unique values
+            norm_map2 = {}
+            for idx2, rec2 in enumerate(records2):
+                n2 = normalize_arabic(str(rec2.get(col2, '')))
+                if not n2 or n2 == 'nan': continue
+                norm_map2.setdefault(n2, []).append(idx2)
+
+            fuzz_results_cache = {}
+
+            for idx1, rec1 in enumerate(records1):
+                val1 = str(rec1.get(col1, ''))
                 norm1 = normalize_arabic(val1)
                 if not norm1 or norm1 == 'nan': continue
 
-                for idx2, row2 in df2.iterrows():
-                    val2 = str(row2[col2])
-                    norm2 = normalize_arabic(val2)
-                    if not norm2 or norm2 == 'nan': continue
-
-                    if norm1 == norm2:
-                        match_row = row1.to_dict()
+                # 1. Exact Match Check
+                if norm1 in norm_map2:
+                    for idx2 in norm_map2[norm1]:
+                        match_row = rec1.copy()
                         match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                         match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                         matches_100.append(match_row)
-                        continue
 
-                    score = fuzz.ratio(norm1, norm2)
-                    if score >= 75:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_75_99.append(match_row)
-                    elif score >= 50:
-                        match_row = row1.to_dict()
-                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                        matches_50_74.append(match_row)
+                # 2. Fuzzy Match Check
+                for norm2, indices2 in norm_map2.items():
+                    if norm1 == norm2: continue
+
+                    pair = tuple(sorted((norm1, norm2)))
+                    if pair in fuzz_results_cache:
+                        score = fuzz_results_cache[pair]
+                    else:
+                        score = fuzz.ratio(norm1, norm2)
+                        fuzz_results_cache[pair] = score
+
+                    if score >= 50:
+                        for idx2 in indices2:
+                            match_row = rec1.copy()
+                            match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                            match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                            if score >= 75:
+                                matches_75_99.append(match_row)
+                            else:
+                                matches_50_74.append(match_row)
 
     return {
         'matches_100': pd.DataFrame(matches_100),
