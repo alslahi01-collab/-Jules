@@ -1,0 +1,3 @@
+## 2026-06-15 - [Optimization of Excel Row Comparison]
+**Learning:** The original O(N*M) nested loop for fuzzy matching rows in Excel sheets was a major bottleneck, especially with repeated Arabic normalization and fuzzy score calculations. Using a dictionary to group indices by unique normalized values reduces the complexity to O(U1*U2) where U is the number of unique values. Caching normalization and fuzzy scores further accelerates the process. Pre-loading target sheets in Streamlit also avoids redundant I/O.
+**Action:** Use record-based iteration (`df.to_dict('records')`) and grouping by unique values for any future N-to-M data comparison tasks.
