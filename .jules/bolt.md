@@ -1,0 +1,3 @@
+## 2025-05-22 - [Optimizing Fuzzy Matching in Excel Comparison]
+**Learning:** In row-wise DataFrame comparison loops (N*M), using `df.iterrows()` or `df.iloc` is a major bottleneck. Pre-converting DataFrames to a list of records (`to_dict('records')`) significantly reduces access overhead. Furthermore, grouping row indices by their normalized values into a dictionary allows performing expensive fuzzy matches (via `fuzz.ratio`) once per unique value pair instead of once per row pair, reducing complexity from O(N*M) to O(U1*U2).
+**Action:** Always prefer record-based iteration and unique value grouping when implementing cross-dataset matching logic. Implement results caching for symmetric similarity functions.
