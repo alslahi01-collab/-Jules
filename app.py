@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import functools
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import uuid
@@ -118,6 +119,7 @@ def detect_header_row(df_raw):
             header_idx = i
     return header_idx
 
+@functools.lru_cache(maxsize=4096)
 def normalize_arabic(text):
     if not isinstance(text, str):
         return str(text)
@@ -215,6 +217,10 @@ def process_comparison(path1, path2, col1, col2):
     }
 
 def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, matches_50_74):
+    """
+    Processes two sheets to find matching rows based on similarity.
+    Optimized to use record-based iteration and unique value grouping.
+    """
     df1_raw = pd.read_excel(xls1, sheet_name=s1, header=None)
     h1 = detect_header_row(df1_raw)
     df1 = pd.read_excel(xls1, sheet_name=s1, header=h1)
@@ -226,34 +232,61 @@ def process_sheets(xls1, s1, xls2, s2, col1, col2, matches_100, matches_75_99, m
     df2.columns = df2.columns.astype(str).str.strip()
     
     if col1 in df1.columns and col2 in df2.columns:
-        for idx1, row1 in df1.iterrows():
-            val1 = str(row1[col1])
+        # Pre-convert to records for faster iteration
+        records1 = df1.to_dict('records')
+        records2 = df2.to_dict('records')
+
+        # Group records by their normalized values to handle duplicates and reduce fuzzy calls
+        grouped2 = {}
+        for idx2, row2 in enumerate(records2):
+            val2 = str(row2.get(col2, ""))
+            norm2 = normalize_arabic(val2)
+            if not norm2 or norm2 == 'nan': continue
+            if norm2 not in grouped2:
+                grouped2[norm2] = []
+            grouped2[norm2].append(idx2)
+
+        unique_norms2 = list(grouped2.keys())
+        fuzz_results_cache = {}
+
+        for idx1, row1 in enumerate(records1):
+            val1 = str(row1.get(col1, ""))
             norm1 = normalize_arabic(val1)
             if not norm1 or norm1 == 'nan': continue
             
-            for idx2, row2 in df2.iterrows():
-                val2 = str(row2[col2])
-                norm2 = normalize_arabic(val2)
-                if not norm2 or norm2 == 'nan': continue
-                
-                if norm1 == norm2:
-                    match_row = row1.to_dict()
+            # 1. Exact match (O(1) lookup)
+            if norm1 in grouped2:
+                for idx2 in grouped2[norm1]:
+                    match_row = row1.copy()
                     match_row['Similarity Location'] = f"Row {idx1+h1+2} in {s1} vs Row {idx2+h2+2} in {s2}"
                     match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
                     matches_100.append(match_row)
+
+            # 2. Fuzzy matching (skip exact matches already handled)
+            for norm2 in unique_norms2:
+                if norm1 == norm2:
                     continue
                 
-                score = fuzz.ratio(norm1, norm2)
+                # Cache fuzzy ratio results for unique pairs
+                pair = tuple(sorted((norm1, norm2)))
+                if pair in fuzz_results_cache:
+                    score = fuzz_results_cache[pair]
+                else:
+                    score = fuzz.ratio(norm1, norm2)
+                    fuzz_results_cache[pair] = score
+
                 if score >= 75:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_75_99.append(match_row)
+                    for idx2 in grouped2[norm2]:
+                        match_row = row1.copy()
+                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                        matches_75_99.append(match_row)
                 elif score >= 50:
-                    match_row = row1.to_dict()
-                    match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
-                    match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
-                    matches_50_74.append(match_row)
+                    for idx2 in grouped2[norm2]:
+                        match_row = row1.copy()
+                        match_row['Similarity Location'] = f"Score: {score}%, {col1} vs {col2}"
+                        match_row['Source Metadata'] = f"File1: {s1}, File2: {s2}"
+                        matches_50_74.append(match_row)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
