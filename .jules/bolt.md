@@ -1,0 +1,3 @@
+## 2026-06-21 - Excel Matching Optimization
+**Learning:** In high-frequency fuzzy matching loops, using \`df.iloc[idx]\` or \`row.to_dict()\` inside the inner match condition is a massive performance killer. Pre-converting the DataFrame to a list of dictionaries using \`df.to_dict('records')\` outside the loop reduces row access overhead significantly. Additionally, grouping row indices by unique normalized values and caching symmetric fuzzy match results reduces complexity from $O(N \times M)$ to $O(U1 \times U2)$.
+**Action:** Always pre-process DataFrames to records and group by unique values when performing $O(N \times M)$ comparisons. Use symmetric caching for expensive functions like \`fuzz.ratio\`.
