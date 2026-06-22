@@ -1,0 +1,3 @@
+## 2026-06-21 - Optimized Excel Comparison Logic
+**Learning:** Nested row comparison loops with `df.iterrows()` and redundant string normalization/fuzzy scoring are massive performance bottlenecks. Grouping row indices by unique normalized values and caching symmetric fuzzy results reduces complexity from O(N*M) to O(U1*U2). Pre-processing target sheets in Streamlit prevents redundant I/O in nested loops.
+**Action:** Always pre-convert DataFrames to 'records' before high-frequency loops, group duplicates by a normalized key, and use a local dictionary with sorted-tuple keys to cache symmetric similarity scores.
