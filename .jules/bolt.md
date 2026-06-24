@@ -1,0 +1,3 @@
+## 2026-06-24 - Optimized Excel Comparison
+**Learning:** In high-frequency fuzzy matching loops, `df.iterrows()` and repeated string normalization are major bottlenecks. Pre-converting DataFrames to `to_dict('records')` and grouping row indices by unique normalized values reduces complexity from $O(N \cdot M)$ to $O(U_1 \cdot U_2)$. Additionally, using a symmetric cache for `fuzz.ratio` (sorting the input pair) halves the number of expensive fuzzy computations.
+**Action:** Always pre-process DataFrames into records and group by unique keys when performing cross-product comparisons or fuzzy matching.
