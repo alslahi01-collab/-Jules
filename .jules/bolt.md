@@ -1,0 +1,3 @@
+## 2025-05-15 - Excel Matching Optimization
+**Learning:** In high-frequency fuzzy matching loops, using `df.iterrows()` or `df.iloc[idx]` inside the inner loop is a massive performance killer. Pre-converting DataFrames to lists of dictionaries using `df.to_dict('records')` reduces row access overhead to nearly zero. Additionally, grouping row indices by unique normalized values allows reducing complexity from $O(N \times M)$ to $O(U_1 \times U_2)$, which is especially effective for datasets with duplicates or low cardinality.
+**Action:** Always pre-convert DataFrames to records and use dictionary-based grouping/caching when performing $O(N \times M)$ row comparisons.
