@@ -1,0 +1,3 @@
+## 2025-05-14 - [Excel Row Matching Optimization]
+**Learning:** Using `df.iterrows()` inside nested loops for row-wise comparison is extremely slow in Pandas. Converting DataFrames to a list of dictionaries with `to_dict('records')` and grouping by unique normalized values significantly reduces the search space and improves iteration speed. Implementing a symmetric results cache for `fuzz.ratio` (storing `tuple(sorted((a, b)))`) avoids redundant calculations for duplicate string pairs.
+**Action:** Always prefer record-based iteration and hash-map grouping over `iterrows()` for O(N*M) comparison tasks.
